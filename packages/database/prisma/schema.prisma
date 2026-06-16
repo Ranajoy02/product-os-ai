@@ -1,0 +1,583 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+model Organization {
+  id          String      @id @default(cuid())
+  name        String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  users       User[]
+  workspaces  Workspace[]
+  workflows   Workflow[]
+}
+
+model User {
+  id             String       @id @default(cuid())
+  email          String       @unique
+  passwordHash   String
+  firstName      String?
+  lastName       String?
+  organizationId String
+  role           Role         @default(MEMBER)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  assignedTasks  Task[]       @relation("TaskAssignee")
+  approvals      Approval[]
+  teams          TeamMember[]
+  performance    PerformanceScore?
+  messages       Message[]
+  channels       ChannelMember[]
+}
+
+enum Role {
+  SUPER_ADMIN
+  ORG_ADMIN
+  CEO
+  PRODUCT_MANAGER
+  PROJECT_MANAGER
+  TEAM_LEAD
+  PROGRAM_MANAGER
+  DEVELOPER
+  DESIGNER
+  QA
+  DEVOPS
+  BUSINESS_ANALYST
+  MEMBER
+  CLIENT_VIEWER
+  CLIENT_APPROVER
+}
+
+model Workspace {
+  id             String       @id @default(cuid())
+  name           String
+  organizationId String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  products       Product[]
+  projects       Project[]
+}
+
+model Product {
+  id          String      @id @default(cuid())
+  name        String
+  description String?
+  healthScore Float       @default(100.0)
+  workspaceId String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id])
+  releases    Release[]
+  documents   Document[]
+  health      ProductHealth?
+  assets      Asset[]
+  channels    Channel[]
+}
+
+model Project {
+  id          String      @id @default(cuid())
+  name        String
+  description String?
+  workspaceId String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id])
+  milestones  Milestone[]
+  tasks       Task[]
+  assets      Asset[]
+  channels    Channel[]
+  lifecycle   DeliveryLifecycle?
+}
+
+model Milestone {
+  id          String      @id @default(cuid())
+  name        String
+  dueDate     DateTime?
+  projectId   String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  project     Project     @relation(fields: [projectId], references: [id])
+  tasks       Task[]
+}
+
+model Task {
+  id          String      @id @default(cuid())
+  title       String
+  description String
+  status      TaskStatus  @default(BACKLOG)
+  projectId   String
+  milestoneId String?
+  assigneeId  String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  project     Project     @relation(fields: [projectId], references: [id])
+  milestone   Milestone?  @relation(fields: [milestoneId], references: [id])
+  assignee    User?       @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  approvals   Approval[]
+}
+
+enum TaskStatus {
+  BACKLOG
+  READY
+  IN_PROGRESS
+  REVIEW
+  BLOCKED
+  TESTING
+  CHANGES_REQUIRED
+  APPROVED
+  COMPLETED
+}
+
+model Approval {
+  id          String        @id @default(cuid())
+  taskId      String?
+  documentId  String?
+  approverId  String
+  status      ApproveStatus @default(PENDING)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  task        Task?         @relation(fields: [taskId], references: [id])
+  document    Document?     @relation(fields: [documentId], references: [id])
+  approver    User          @relation(fields: [approverId], references: [id])
+}
+
+enum ApproveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Release {
+  id          String    @id @default(cuid())
+  version     String
+  name        String
+  releasedAt  DateTime?
+  productId   String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  product     Product   @relation(fields: [productId], references: [id])
+}
+
+model Document {
+  id          String    @id @default(cuid())
+  title       String
+  content     String
+  type        DocumentType @default(PRD)
+  version     Int          @default(1)
+  productId   String?
+  embedding   Unsupported("vector(1536)")?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  product     Product?  @relation(fields: [productId], references: [id])
+  approvals   Approval[]
+}
+
+enum DocumentType {
+  PRD
+  BRD
+  SOP
+  DESIGN
+  ARCHITECTURE
+  MEETING_NOTES
+  CLIENT_DOC
+}
+
+// --- MODULE 1: ENTERPRISE WORKFLOW BUILDER ---
+model Workflow {
+  id             String              @id @default(cuid())
+  name           String
+  description    String?
+  organizationId String
+  version        Int                 @default(1)
+  isPublished    Boolean             @default(false)
+  steps          WorkflowStep[]
+  executions     WorkflowExecution[]
+  createdAt      DateTime            @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+}
+
+model WorkflowStep {
+  id          String               @id @default(cuid())
+  workflowId  String
+  name        String
+  type        StepType             // APPROVAL, ACTION, CONDITION, GATE
+  config      Json                 // SLA, Escaltion rules, Roles
+  slaMinutes  Int?
+  isBottleneck Boolean             @default(false)
+  transitions WorkflowTransition[] @relation("SourceStep")
+  incoming    WorkflowTransition[] @relation("TargetStep")
+  workflow    Workflow             @relation(fields: [workflowId], references: [id])
+}
+
+model WorkflowTransition {
+  id          String        @id @default(cuid())
+  sourceId    String
+  targetId    String
+  condition   Json?         // Evaluation rules
+  source      WorkflowStep  @relation("SourceStep", fields: [sourceId], references: [id])
+  target      WorkflowStep  @relation("TargetStep", fields: [targetId], references: [id])
+}
+
+model WorkflowExecution {
+  id          String   @id @default(cuid())
+  workflowId  String
+  targetId    String   // Polymorphic ID (Task, Release, etc)
+  targetType  String
+  status      String
+  workflow    Workflow @relation(fields: [workflowId], references: [id])
+}
+
+// --- MODULE 2: ENTERPRISE PRODUCT HEALTH ENGINE ---
+model ProductHealth {
+  id          String           @id @default(cuid())
+  productId   String           @unique
+  score       Float
+  category    HealthCategory   // GREEN, YELLOW, RED
+  metrics     HealthMetric[]
+  snapshots   HealthSnapshot[]
+  product     Product          @relation(fields: [productId], references: [id])
+}
+
+model HealthMetric {
+  id          String        @id @default(cuid())
+  healthId    String
+  type        MetricType    // VELOCITY, DEFECT_DENSITY, etc.
+  value       Float
+  health      ProductHealth @relation(fields: [healthId], references: [id])
+}
+
+model HealthSnapshot {
+  id          String        @id @default(cuid())
+  healthId    String
+  score       Float
+  recordedAt  DateTime      @default(now())
+  health      ProductHealth @relation(fields: [healthId], references: [id])
+}
+
+enum HealthCategory {
+  GREEN
+  YELLOW
+  RED
+}
+
+enum MetricType {
+  VELOCITY
+  TASK_COMPLETION
+  BLOCKED_WORK
+  APPROVAL_DELAYS
+  RELEASE_RISK
+  DEFECT_DENSITY
+  ROADMAP_PROGRESS
+  RESOURCE_UTILIZATION
+  CUSTOMER_FEEDBACK
+}
+
+enum StepType {
+  APPROVAL
+  ACTION
+  CONDITION
+  GATE
+}
+
+// --- MODULE 3: ENTERPRISE ROADMAP ENGINE ---
+model StrategicGoal {
+  id          String       @id @default(cuid())
+  name        String
+  objectives  Objective[]
+}
+
+model Objective {
+  id          String       @id @default(cuid())
+  goalId      String
+  name        String
+  keyResults  KeyResult[]
+  initiatives Initiative[]
+  goal        StrategicGoal @relation(fields: [goalId], references: [id])
+}
+
+model KeyResult {
+  id          String    @id @default(cuid())
+  objectiveId String
+  name        String
+  target      Float
+  current     Float
+  objective   Objective @relation(fields: [objectiveId], references: [id])
+}
+
+model Initiative {
+  id          String      @id @default(cuid())
+  objectiveId String
+  name        String
+  roadmaps    RoadmapItem[]
+  objective   Objective   @relation(fields: [objectiveId], references: [id])
+}
+
+enum RoadmapType {
+  PORTFOLIO
+  PROGRAM
+  PRODUCT
+  PROJECT
+  RELEASE
+}
+
+model Roadmap {
+  id          String        @id @default(cuid())
+  name        String
+  type        RoadmapType
+  items       RoadmapItem[]
+}
+
+model RoadmapItem {
+  id           String     @id @default(cuid())
+  roadmapId    String
+  initiativeId String
+  startDate    DateTime
+  endDate      DateTime
+  status       String
+  roadmap      Roadmap    @relation(fields: [roadmapId], references: [id])
+  initiative   Initiative @relation(fields: [initiativeId], references: [id])
+}
+
+// --- MODULE 4: ENTERPRISE KNOWLEDGE GRAPH ---
+// We will use standard relational tables indexed heavily to emulate graph edges, combined with pgvector.
+model KnowledgeNode {
+  id          String   @id @default(cuid())
+  entityId    String   @unique // Refers to Task, PRD, Release, etc.
+  entityType  String
+  embedding   Unsupported("vector(1536)")?
+  outgoingEdges KnowledgeEdge[] @relation("SourceNode")
+  incomingEdges KnowledgeEdge[] @relation("TargetNode")
+}
+
+model KnowledgeEdge {
+  id          String        @id @default(cuid())
+  sourceId    String
+  targetId    String
+  relation    String        // e.g., "BLOCKS", "DEPENDS_ON", "GENERATED_FROM"
+  weight      Float         @default(1.0)
+  source      KnowledgeNode @relation("SourceNode", fields: [sourceId], references: [id])
+  target      KnowledgeNode @relation("TargetNode", fields: [targetId], references: [id])
+}
+
+// --- MODULE 5: DECISION & RESOURCE INTELLIGENCE ---
+model DecisionLog {
+  id          String   @id @default(cuid())
+  title       String
+  context     String
+  ownerId     String
+  outcome     String?
+  createdAt   DateTime @default(now())
+}
+
+model ResourceAllocation {
+  id           String   @id @default(cuid())
+  userId       String
+  initiativeId String?
+  taskId       String?
+  allocatedPts Float
+  startDate    DateTime
+  endDate      DateTime
+  createdAt    DateTime @default(now())
+}
+
+// --- MODULE 6: DELIVERY LIFECYCLE MANAGEMENT ---
+model DeliveryLifecycle {
+  id          String         @id @default(cuid())
+  projectId   String         @unique
+  project     Project        @relation(fields: [projectId], references: [id])
+  phase       LifecyclePhase @default(REQUIREMENTS)
+  ownerTeamId String?
+  ownerTeam   Team?          @relation(fields: [ownerTeamId], references: [id])
+}
+
+enum LifecyclePhase {
+  REQUIREMENTS
+  PLANNING
+  DESIGN
+  DEVELOPMENT
+  TESTING
+  RELEASE
+  POST_RELEASE
+}
+
+// --- MODULE 7: TEAM MANAGEMENT SYSTEM ---
+model Team {
+  id          String       @id @default(cuid())
+  name        String
+  members     TeamMember[]
+  capacity    Float        @default(100.0)
+  velocity    Float        @default(0.0)
+  utilization Float        @default(0.0)
+  channels    Channel[]
+  lifecycles  DeliveryLifecycle[]
+}
+
+model TeamMember {
+  id          String   @id @default(cuid())
+  userId      String
+  teamId      String
+  skills      String[]
+  user        User     @relation(fields: [userId], references: [id])
+  team        Team     @relation(fields: [teamId], references: [id])
+}
+
+// --- MODULE 8: PERFORMANCE INTELLIGENCE LAYER ---
+model PerformanceScore {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id])
+  contributionScore  Float
+  deliveryScore      Float
+  collaborationScore Float
+  burnoutRisk        Float    @default(0.0)
+}
+
+// --- MODULE 9: CHANGE REQUEST MANAGEMENT ---
+model ChangeRequest {
+  id          String              @id @default(cuid())
+  title       String
+  status      ChangeRequestStatus @default(REQUESTED)
+}
+
+enum ChangeRequestStatus {
+  REQUESTED
+  REVIEW
+  APPROVED
+  REWORK
+  CLOSED
+}
+
+// --- MODULE 10: FILE & ASSET REPOSITORY ---
+model Asset {
+  id        String    @id @default(cuid())
+  name      String
+  url       String
+  type      AssetType
+  projectId String?
+  productId String?
+  userId    String?
+  project   Project?  @relation(fields: [projectId], references: [id])
+  product   Product?  @relation(fields: [productId], references: [id])
+}
+
+enum AssetType {
+  PERSONAL
+  PROJECT
+  PRODUCT
+}
+
+// --- MODULE 11: COMMUNICATION HUB ---
+model Channel {
+  id          String          @id @default(cuid())
+  name        String
+  type        ChannelType
+  productId   String?
+  projectId   String?
+  teamId      String?
+  product     Product?        @relation(fields: [productId], references: [id])
+  project     Project?        @relation(fields: [projectId], references: [id])
+  team        Team?           @relation(fields: [teamId], references: [id])
+  members     ChannelMember[]
+  messages    Message[]
+}
+
+enum ChannelType {
+  GENERAL
+  PRODUCT
+  PROJECT
+  TEAM
+  DIRECT_MESSAGE
+}
+
+model ChannelMember {
+  id        String   @id @default(cuid())
+  userId    String
+  channelId String
+  user      User     @relation(fields: [userId], references: [id])
+  channel   Channel  @relation(fields: [channelId], references: [id])
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  content   String
+  channelId String
+  senderId  String
+  threadId  String?
+  channel   Channel  @relation(fields: [channelId], references: [id])
+  sender    User     @relation(fields: [senderId], references: [id])
+}
+
+// --- MODULE 12: OUTCOME TRACKING ---
+model Outcome {
+  id               String   @id @default(cuid())
+  businessGoals    String
+  kpiTargets       String
+  kpiAchievement   Float
+  roi              Float
+  customerImpact   String
+  strategicSuccess String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// --- MODULE 13: ENTERPRISE GOVERNANCE & AUDIT ---
+model GovernancePolicy {
+  id               String   @id @default(cuid())
+  dataResidency    String   @default("US-East")
+  retentionDays    Int      @default(365)
+  encryptionLevel  String   @default("AES-256")
+  backupFrequency  String   @default("Daily")
+  updatedAt        DateTime @updatedAt
+}
+
+model AuditEvent {
+  id            String   @id @default(cuid())
+  entityType    String   // e.g., 'User', 'Product', 'Project'
+  entityId      String
+  action        String   // e.g., 'CREATE', 'UPDATE', 'DELETE', 'EXPORT'
+  actorId       String
+  beforeState   String?
+  afterState    String?
+  timestamp     DateTime @default(now())
+  ipAddress     String?
+}
+
+model IntegrationState {
+  id              String   @id @default(cuid())
+  provider        String   // e.g., 'GitHub', 'Salesforce', 'Slack'
+  status          String   // e.g., 'Connected', 'Disconnected', 'Error'
+  lastSync        DateTime?
+  syncHealth      Float    // e.g. 99.9
+  errorCount      Int      @default(0)
+  updatedAt       DateTime @updatedAt
+}
+
+model MigrationSimulation {
+  id              String   @id @default(cuid())
+  sourceSystem    String   // e.g., 'Jira', 'Asana'
+  status          String   // e.g., 'Mapping', 'Validation', 'Conversion', 'Verified'
+  totalRecords    Int      @default(0)
+  migratedRecords Int      @default(0)
+  errorRecords    Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
